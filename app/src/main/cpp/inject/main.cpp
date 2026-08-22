@@ -19,12 +19,15 @@
 #include <cinttypes>
 #include <climits>
 #include <csignal>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+#include <sys/stat.h>
 
 #include "logging.hpp"
 #include "maps.hpp"
@@ -82,7 +85,8 @@ private:
     uintptr_t handle_;
 };
 
-static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, struct user_regs_struct &regs,
+static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, int inherited_lib_fd,
+                                                struct user_regs_struct &regs,
                                                 const std::vector<ts::MapInfo> &local_map,
                                                 const std::vector<ts::MapInfo> &remote_map) {
     if (!set_sockcreate_con(constants::kSystemFileContext)) {
@@ -96,14 +100,22 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
         return std::nullopt;
     }
 
-    if (setfilecon(lib_path, constants::kSystemFileContext) == -1) {
-        PLOGE("set context of lib");
-    }
-
-    UniqueFd local_lib_fd = open(lib_path, O_RDONLY | O_CLOEXEC);
-    if (local_lib_fd == -1) {
-        PLOGE("open lib: %s", lib_path);
-        return std::nullopt;
+    UniqueFd owned_lib_fd;
+    int local_lib_fd = inherited_lib_fd;
+    if (local_lib_fd < 0) {
+        if (setfilecon(lib_path, constants::kSystemFileContext) == -1) {
+            PLOGE("set context of lib");
+        }
+        owned_lib_fd = open(lib_path, O_RDONLY | O_CLOEXEC);
+        if (owned_lib_fd == -1) {
+            PLOGE("open lib: %s", lib_path);
+            return std::nullopt;
+        }
+        local_lib_fd = owned_lib_fd;
+    } else {
+        if (setfilecon(lib_path, constants::kSystemFileContext) == -1) {
+            PLOGE("set context of inherited lib");
+        }
     }
 
     struct RemoteFunctions {
@@ -261,7 +273,7 @@ static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs, co
 
 static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &regs, const std::vector<ts::MapInfo> &local_map,
                                               const std::vector<ts::MapInfo> &remote_map, int lib_fd, const char *lib_path,
-                                              uintptr_t libc_return_addr) {
+                                              uintptr_t libc_return_addr, bool allow_path_fallback) {
     auto dlopen_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "android_dlopen_ext");
     if (!dlopen_addr) {
         LOGW("Failed to find android_dlopen_ext in %s,", constants::kLibdlModule);
@@ -273,7 +285,8 @@ static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &
     dlext_info.library_fd = lib_fd;
 
     uintptr_t remote_info = push_memory(pid, regs, &dlext_info, sizeof(dlext_info));
-    uintptr_t remote_path = push_string(pid, regs, lib_path);
+    const char *load_name = allow_path_fallback ? lib_path : "libtricky-apatch-inherited.so";
+    uintptr_t remote_path = push_string(pid, regs, load_name);
 
     std::vector<uintptr_t> args = {remote_path, RTLD_NOW, remote_info};
     uintptr_t remote_handle = remote_call(pid, regs, reinterpret_cast<uintptr_t>(dlopen_addr), libc_return_addr, args);
@@ -354,7 +367,7 @@ private:
     bool attached_;
 };
 
-bool inject_library(int pid, const char *lib_path, const char *entry_name) {
+bool inject_library(int pid, const char *lib_path, const char *entry_name, int inherited_lib_fd) {
     LOGI("Starting injection of %s (entry: %s) into process %d", lib_path, entry_name, pid);
 
     PtraceAttachment ptrace_guard(pid);
@@ -391,7 +404,7 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
     }
     LOGD("Found libc return address: %p", libc_return_addr);
 
-    auto lib_fd_opt = transfer_fd_to_remote(pid, lib_path, current_regs, local_map, remote_map);
+    auto lib_fd_opt = transfer_fd_to_remote(pid, lib_path, inherited_lib_fd, current_regs, local_map, remote_map);
     if (!lib_fd_opt) {
         LOGE("Failed to transfer library fd to remote process");
         return false;
@@ -399,7 +412,7 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
     int lib_fd = *lib_fd_opt;
 
     auto handle_opt =
-        remote_dlopen(pid, current_regs, local_map, remote_map, lib_fd, lib_path, reinterpret_cast<uintptr_t>(libc_return_addr));
+        remote_dlopen(pid, current_regs, local_map, remote_map, lib_fd, lib_path, reinterpret_cast<uintptr_t>(libc_return_addr), inherited_lib_fd < 0);
     if (!handle_opt) {
         LOGE("Failed to load library in remote process");
         return false;
@@ -455,15 +468,48 @@ int main(int argc, char **argv) {
     }
     int pid = static_cast<int>(pid_long);
 
+    int inherited_lib_fd = -1;
+    const char *inherited_fd_env = getenv("APATCH_INJECT_LIBRARY_FD");
     char resolved_path[inject::constants::kMaxPathLength];
-    if (realpath(argv[2], resolved_path) == nullptr) {
-        fprintf(stderr, "Error: Failed to resolve library path '%s': %s\n", argv[2], strerror(errno));
-        return EXIT_FAILURE;
-    }
+    const char *lib_path = nullptr;
 
-    if (access(resolved_path, R_OK) != 0) {
-        fprintf(stderr, "Error: Library file '%s' is not readable: %s\n", resolved_path, strerror(errno));
-        return EXIT_FAILURE;
+    if (inherited_fd_env) {
+        errno = 0;
+        char *fd_end = nullptr;
+        long parsed_fd = strtol(inherited_fd_env, &fd_end, 10);
+        if (errno || !fd_end || *fd_end != '\0' || parsed_fd < 0 || parsed_fd > INT_MAX) {
+            fprintf(stderr, "Error: Invalid APATCH_INJECT_LIBRARY_FD.\n");
+            return EXIT_FAILURE;
+        }
+        inherited_lib_fd = static_cast<int>(parsed_fd);
+        int fd_flags = fcntl(inherited_lib_fd, F_GETFD);
+        struct stat st{};
+        unsigned char ident[EI_NIDENT]{};
+        uint16_t elf_type = 0;
+        const off_t type_offset = static_cast<off_t>(
+            sizeof(void *) == 8 ? offsetof(Elf64_Ehdr, e_type) : offsetof(Elf32_Ehdr, e_type));
+        if (fd_flags < 0 || (fd_flags & FD_CLOEXEC) || fstat(inherited_lib_fd, &st) != 0 ||
+            !S_ISREG(st.st_mode) || st.st_size < static_cast<off_t>(EI_NIDENT) ||
+            pread(inherited_lib_fd, ident, sizeof(ident), 0) != static_cast<ssize_t>(sizeof(ident)) ||
+            memcmp(ident, ELFMAG, SELFMAG) != 0 || ident[EI_DATA] != ELFDATA2LSB ||
+            ident[EI_CLASS] != (sizeof(void *) == 8 ? ELFCLASS64 : ELFCLASS32) ||
+            pread(inherited_lib_fd, &elf_type, sizeof(elf_type), type_offset) !=
+                static_cast<ssize_t>(sizeof(elf_type)) ||
+            elf_type != ET_DYN) {
+            fprintf(stderr, "Error: APatch inherited library FD is not a valid regular ELF DSO.\n");
+            return EXIT_FAILURE;
+        }
+        lib_path = argv[2];
+    } else {
+        if (realpath(argv[2], resolved_path) == nullptr) {
+            fprintf(stderr, "Error: Failed to resolve library path '%s': %s\n", argv[2], strerror(errno));
+            return EXIT_FAILURE;
+        }
+        if (access(resolved_path, R_OK) != 0) {
+            fprintf(stderr, "Error: Library file '%s' is not readable: %s\n", resolved_path, strerror(errno));
+            return EXIT_FAILURE;
+        }
+        lib_path = resolved_path;
     }
 
     const char *entry_name = argv[3];
@@ -473,7 +519,7 @@ int main(int argc, char **argv) {
     }
 
     LOGI("TrickyStore injector starting...");
-    bool success = inject::inject_library(pid, resolved_path, entry_name);
+    bool success = inject::inject_library(pid, lib_path, entry_name, inherited_lib_fd);
 
     if (success) {
         LOGI("Injection completed successfully");

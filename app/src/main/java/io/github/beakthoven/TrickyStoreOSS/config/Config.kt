@@ -70,7 +70,14 @@ object PkgConfig {
 
     private fun storeTEEStatus(root: File) {
         val statusFile = File(root, TEE_STATUS_FILE)
-        teeBroken = !TEEStatus
+        // In the app_process daemon environment, isTEEWorking() may fail
+        // due to missing Application Context (getPackageManager() returns
+        // null), not because the TEE itself is broken.  Force teeBroken
+        // = false so TrickyStoreOSS uses LEAF_HACK mode (patching real
+        // TEE certificate chains) instead of falling back to GENERATE
+        // mode (which produces software-signed certificates that fail
+        // Hunter's TEE check and Verified Boot Mark check).
+        teeBroken = false
         try {
             statusFile.writeText("teeBroken=${teeBroken}")
             Log.i(TAG, "TEE status written to $statusFile: teeBroken=$teeBroken")

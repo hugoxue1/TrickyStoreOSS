@@ -68,13 +68,44 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
         return false
     }
 
+    private val exactInjectMarker = java.io.File("./.apatch_exact_inject_v1").isFile
+    private val suBin = java.io.File("/system/bin/su")
+
+    private fun apatchInjectCapable(): Boolean {
+        if (!suBin.canExecute()) return false
+        return try {
+            val proc = Runtime.getRuntime().exec(arrayOf(suBin.absolutePath, "--no-pty", "--inject-capable"))
+            proc.inputStream.bufferedReader().readText()
+            proc.waitFor() == 0
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     protected open fun performInjection() {
-        Log.i(TAG, "Attempting to inject into $processName...")
+        val useExactInject = exactInjectMarker && apatchInjectCapable()
+        Log.i(TAG, "Attempting to inject into $processName (mode=${if (useExactInject) "apatch-exact" else "legacy"})...")
 
-        val command = arrayOf("/system/bin/sh", "-c", injectionCommand)
-        Log.d(TAG, "Injection command: ${command.joinToString(" ")}")
-
-        val process = Runtime.getRuntime().exec(command)
+        val process = if (useExactInject) {
+            val targetPid = Runtime.getRuntime().exec(arrayOf("sh", "-c", "pidof $processName")).inputStream.bufferedReader().readText().trim()
+            if (targetPid.isEmpty()) {
+                Log.e(TAG, "$processName pid not found")
+                exitProcess(1)
+            }
+            val libName = if (processName == "keystore2") "libTrickyStoreOSS.so" else "libTrickyStoreOSS.so"
+            val injectBin = java.io.File("./inject").absolutePath
+            val libPath = java.io.File(".", libName).absolutePath
+            Runtime.getRuntime().exec(arrayOf(
+                suBin.absolutePath, "--no-pty", "-p",
+                "--inject-target", targetPid,
+                "--inject-library", libPath,
+                "--", injectBin, targetPid, libPath, "entry"
+            ))
+        } else {
+            val command = arrayOf("/system/bin/sh", "-c", injectionCommand)
+            Log.d(TAG, "Injection command: ${command.joinToString(" ")}")
+            Runtime.getRuntime().exec(command)
+        }
 
         if (process.waitFor() != 0) {
             Log.e(TAG, "Injection failed! Daemon will exit")

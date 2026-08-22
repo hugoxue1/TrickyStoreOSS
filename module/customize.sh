@@ -95,3 +95,17 @@ if [ ! -f "$CONFIG_DIR/target.txt" ]; then
   ui_print "- Adding default target scope"
   install_file "target.txt" "$CONFIG_DIR"
 fi
+
+# The customised APatch can authorize one exact injector/keystore transaction
+# without loading a persistent SELinux policy.  Record that install-time choice
+# in the module directory and remove only the installed copy of sepolicy.rule.
+# Every other root manager keeps the compatibility policy unchanged.
+APATCH_INJECT_MARKER="$MODPATH/.apatch_exact_inject_v1"
+SU=/system/bin/su
+if [ -x "$SU" ] && "$SU" --no-pty --inject-capable >/dev/null 2>&1; then
+  rm -f "$MODPATH/sepolicy.rule"
+  : > "$APATCH_INJECT_MARKER"
+  ui_print "- Using APatch exact injection (no persistent SELinux policy)"
+else
+  rm -f "$APATCH_INJECT_MARKER"
+fi
