@@ -76,13 +76,37 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
         data: Parcel,
     ): Result {
         if (KeyBoxUtils.hasKeyboxes()) {
-            if (code == getTransaction) {
-                if (PkgConfig.needHack(callingUid)) {
-                    return Continue
-                } else if (PkgConfig.needGenerate(callingUid)) {
-                    return Skip
-                }
-            } else if (PkgConfig.needGenerate(callingUid)) {
+            // LEAF_HACK mode: let the "get" transaction pass through to
+            // the real keystore; onPostTransact will hack the returned
+            // certificate.  This works because "get" returns a byte[] in
+            // the reply Parcel, which onPostTransact can intercept.
+            if (PkgConfig.needHack(callingUid) && code == getTransaction) {
+                return Continue
+            }
+
+            // CRITICAL (Android 10-11 pitfall):
+            // On Android 10/11, attestKey returns the certificate chain
+            // via an async IKeystoreCertificateChainCallback.onFinished()
+            // callback — NOT in the reply Parcel of the Binder transact.
+            // Therefore onPostTransact cannot intercept the attestation
+            // certificate chain for attestKey.
+            //
+            // In LEAF_HACK mode (teeBroken=false), we must still forge
+            // the attestation certificate chain.  We do this by handling
+            // attestKey in onPreTransact: the forged chain is signed with
+            // the keybox's real TEE key (making attestationSecurityLevel
+            // = TEE), and the boot-state extension fields (deviceLocked,
+            // verifiedBootState, verifiedBootKey) are set to match the
+            // forged values.  The callback receives the forged chain
+            // directly; the real keystore is never called for attestKey.
+            //
+            // Without this, Momo detects TEE damage because the real
+            // (unlocked) boot state leaks through the un-hacked
+            // attestation certificate.
+            val shouldHandle = PkgConfig.needHack(callingUid) || PkgConfig.needGenerate(callingUid)
+            if (code == getTransaction && PkgConfig.needGenerate(callingUid)) {
+                return Skip
+            } else if (shouldHandle) {
                 when (code) {
                     generateKeyTransaction -> {
                         val raw = runCatching {
@@ -228,6 +252,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
     ): Result {
         if (target != keystore || code != getTransaction || reply == null) return Skip
         if (reply.hasException()) return Skip
+        if (!PkgConfig.needHack(callingUid)) return Skip
         Log.d(
             TAG,
             "intercept post $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()} replySz=${reply.dataSize()}",
