@@ -58,10 +58,21 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
 
     companion object {
         private const val DEFAULT_KEYGEN_MS = 3.0
-        private val generateKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
-        private val createOperationTransaction =
+
+        // Lazy-load transact codes to avoid NoClassDefFoundError on
+        // Android 10-11 where IKeystoreSecurityLevel$Stub doesn't exist.
+        // The companion object is initialised when any static member is
+        // accessed (e.g. CertificateGen referencing SecurityLevelInterceptor.keys),
+        // so eager initialisation of keystore2 classes would crash the daemon.
+        private val generateKeyTransaction: Int by lazy {
+            getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
+        }
+        private val createOperationTransaction: Int by lazy {
             getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")
-        private val importKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "importKey")
+        }
+        private val importKeyTransaction: Int by lazy {
+            getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "importKey")
+        }
 
         private val secureRandom = SecureRandom()
 
