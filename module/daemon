@@ -2,13 +2,14 @@
 
 MODDIR=$1
 
-# Determine classpath
-if [ -f "$MODDIR/classes.dex" ]; then
-    CLASSPATH="$MODDIR/classes.dex"
-elif [ -f "$MODDIR/service.apk" ]; then
+# Determine classpath — prefer service.apk (full APK with manifest),
+# fall back to classes.dex (bare dex, may not work on all Android versions)
+if [ -f "$MODDIR/service.apk" ]; then
     CLASSPATH="$MODDIR/service.apk"
+elif [ -f "$MODDIR/classes.dex" ]; then
+    CLASSPATH="$MODDIR/classes.dex"
 else
-    echo "Error: Neither classes.dex nor service.apk found in $MODDIR"
+    echo "Error: Neither service.apk nor classes.dex found in $MODDIR"
     exit 1
 fi
 

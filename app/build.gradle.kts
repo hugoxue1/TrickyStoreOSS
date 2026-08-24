@@ -124,7 +124,7 @@ androidComponents {
                         buildDir.get().asFile.resolve("intermediates/dex/release/minifyReleaseWithR8/classes.dex")
                     }
 
-                val destFileName = if (isDebug) "service.apk" else "classes.dex"
+                val destFileName = "service.apk"
                 sourceFile.copyTo(moduleFolder.resolve(destFileName), overwrite = true)
 
                 val soDir =
