@@ -118,11 +118,7 @@ androidComponents {
                 }
 
                 val sourceFile =
-                    if (isDebug) {
-                        buildDir.get().asFile.resolve("outputs/apk/$variantName/app-$variantName.apk")
-                    } else {
-                        buildDir.get().asFile.resolve("intermediates/dex/release/minifyReleaseWithR8/classes.dex")
-                    }
+                    buildDir.get().asFile.resolve("outputs/apk/$variantName/app-$variantName-unsigned.apk")
 
                 val destFileName = "service.apk"
                 sourceFile.copyTo(moduleFolder.resolve(destFileName), overwrite = true)
