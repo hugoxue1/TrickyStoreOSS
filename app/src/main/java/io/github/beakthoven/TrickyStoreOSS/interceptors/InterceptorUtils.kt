@@ -55,13 +55,20 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
 
     private fun handleMissingBackdoor(): Boolean {
         if (triedCount >= maxRetries) {
-            Log.e(TAG, "Tried injection $maxRetries times but still no backdoor, exiting")
-            exitProcess(1)
+            // Don't exit — reset state and keep retrying.  At early boot
+            // keystore2 may not be running or APatch's su may not be ready.
+            // Exiting here used to kill the shell restart loop permanently
+            // (via "|| exit 1" in post-fs-data.sh / service.sh), leaving
+            // TrickyStoreOSS dead for the entire session.
+            Log.w(TAG, "Backdoor still unavailable after $maxRetries attempts, resetting state for retry...")
+            triedCount = 0
+            injected = false
         }
 
         if (!injected) {
-            performInjection()
-            injected = true
+            if (performInjection()) {
+                injected = true
+            }
         }
 
         triedCount++
@@ -82,15 +89,25 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
         }
     }
 
-    protected open fun performInjection() {
+    protected open fun performInjection(): Boolean {
         val useExactInject = exactInjectMarker && apatchInjectCapable()
+
+        // On APatch (exactInjectMarker present), if su is not yet ready at
+        // early boot, do NOT fall back to legacy inject — it will fail
+        // silently on APatch due to SELinux restrictions on ptrace.
+        // Return false so the retry loop tries again once su is ready.
+        if (exactInjectMarker && !useExactInject) {
+            Log.i(TAG, "APatch exact inject marker present but su not ready, skipping injection (will retry)")
+            return false
+        }
+
         Log.i(TAG, "Attempting to inject into $processName (mode=${if (useExactInject) "apatch-exact" else "legacy"})...")
 
         val process = if (useExactInject) {
             val targetPid = Runtime.getRuntime().exec(arrayOf("sh", "-c", "pidof $processName")).inputStream.bufferedReader().readText().trim()
             if (targetPid.isEmpty()) {
-                Log.e(TAG, "$processName pid not found")
-                exitProcess(1)
+                Log.e(TAG, "$processName pid not found, will retry later")
+                return false
             }
             val libName = if (processName == "keystore2") "libTrickyStoreOSS.so" else "libTrickyStoreOSS.so"
             val injectBin = java.io.File("./inject").absolutePath
@@ -108,11 +125,12 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
         }
 
         if (process.waitFor() != 0) {
-            Log.e(TAG, "Injection failed! Daemon will exit")
-            exitProcess(1)
+            Log.e(TAG, "Injection failed, will retry...")
+            return false
         }
 
         Log.i(TAG, "Injection completed successfully")
+        return true
     }
 
     protected open fun createDeathRecipient(): IBinder.DeathRecipient =
