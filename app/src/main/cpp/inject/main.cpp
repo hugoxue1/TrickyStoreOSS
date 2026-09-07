@@ -519,6 +519,39 @@ int main(int argc, char **argv) {
     }
 
     LOGI("TrickyStore injector starting...");
+
+    // 167 修复方案3：fingerprint HAL 进程排除——TrickyStore 的 PLT hook（libbinder ioctl）
+    // 与 fingerprint HAL 的 binder 事务 mutex 生命周期冲突，导致 FORTIFY 崩溃
+    // （tombstone #29: pthread_mutex_lock on destroyed mutex）。
+    // 注入前检查目标进程名，匹配 biometrics/fingerprint 族则安全跳过。
+    {
+        char comm_path[64];
+        char comm[256] = {0};
+        snprintf(comm_path, sizeof(comm_path), "/proc/%d/cmdline", pid);
+        int comm_fd = open(comm_path, O_RDONLY);
+        if (comm_fd >= 0) {
+            ssize_t n = read(comm_fd, comm, sizeof(comm) - 1);
+            close(comm_fd);
+            if (n > 0) {
+                std::string proc_name(comm);
+                // fingerprint/biometrics HAL 进程名匹配模式
+                const char *excluded_patterns[] = {
+                    "fingerprint",
+                    "biometrics",
+                    "android.hardware.biometrics",
+                    nullptr
+                };
+                for (int i = 0; excluded_patterns[i]; ++i) {
+                    if (proc_name.find(excluded_patterns[i]) != std::string::npos) {
+                        LOGI("Skipping injection into excluded process: %s (pid=%d)", comm, pid);
+                        fprintf(stderr, "Skipped: target process '%s' is in fingerprint/biometrics exclusion list\n", comm);
+                        return EXIT_SUCCESS; // 视为成功——不是错误，是有意跳过
+                    }
+                }
+            }
+        }
+    }
+
     bool success = inject::inject_library(pid, lib_path, entry_name, inherited_lib_fd);
 
     if (success) {
