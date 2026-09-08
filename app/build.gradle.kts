@@ -36,6 +36,15 @@ android {
     compileSdk = 37
     ndkVersion = "29.0.14206865"
 
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "TrickyStoreDebug"
+            keyPassword = "android"
+        }
+    }
+
     defaultConfig {
         applicationId = "io.github.beakthoven.TrickyStoreOSS"
         minSdk = 29
@@ -64,7 +73,7 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.create("debug")
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
