@@ -8,7 +8,7 @@ package io.github.beakthoven.TrickyStoreOSS.logging
 import android.os.SystemProperties
 import android.util.Log
 
-const val TAG = "TrickyStoreOSS"  # 保持 public——Android 10/11 attestKey 保留代码块直接使用 Log.x(TAG)
+private const val TAG = "TrickyStoreOSS"
 
 object Logger {
     private val logdReady: Boolean by lazy { SystemProperties.get("init.svc.logd", "") == "running" }

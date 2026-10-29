@@ -515,7 +515,7 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name, int i
 
     auto handle_opt =
         remote_dlopen(pid, current_regs, local_map, remote_map, lib_fd, lib_path, reinterpret_cast<uintptr_t>(libc_return_addr),
-                      allow_path_fallback, &pending_signal);
+                      inherited_lib_fd < 0, &pending_signal);
     if (!handle_opt) {
         LOGE("Failed to load library in remote process");
         return false;
