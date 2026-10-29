@@ -10,10 +10,10 @@ import android.os.Parcel
 import android.os.Parcelable
 import android.os.ServiceManager
 import android.os.ServiceSpecificException
+import android.security.Credentials
 import android.security.KeyStore
 import android.security.keystore.KeystoreResponse
-import android.util.Log
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import kotlin.system.exitProcess
 
 abstract class BaseKeystoreInterceptor : BinderInterceptor() {
@@ -28,7 +28,7 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
     protected abstract val processName: String
 
     fun tryRunKeystoreInterceptor(): Boolean {
-        Log.i(TAG, "Trying to register ${this::class.simpleName} (attempt $triedCount)...")
+        Logger.i("Trying to register ${this::class.simpleName} (attempt $triedCount)...")
 
         val service = getService() ?: return false
         val backdoor = getBinderBackdoor(service)
@@ -43,10 +43,14 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
     protected open fun getService(): IBinder? = ServiceManager.getService(serviceName)
 
     protected open fun setupInterceptor(service: IBinder, backdoor: IBinder): Boolean {
-        keystore = service
-        Log.i(TAG, "Registering for $serviceName: $keystore")
+        Logger.i("Registering for $serviceName: $service")
 
-        registerBinderInterceptor(backdoor, service, this)
+        if (!registerBinderInterceptor(backdoor, service, this)) {
+            Logger.e("Failed to register interceptor for $serviceName; aborting setup")
+            return false
+        }
+
+        keystore = service
         service.linkToDeath(createDeathRecipient(), 0)
         onInterceptorSetup(service, backdoor)
 
@@ -55,6 +59,7 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
 
     private fun handleMissingBackdoor(): Boolean {
         if (triedCount >= maxRetries) {
+<<<<<<< HEAD
             // Don't exit — reset state and keep retrying.  At early boot
             // keystore2 may not be running or APatch's su may not be ready.
             // Exiting here used to kill the shell restart loop permanently
@@ -63,6 +68,10 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
             Log.w(TAG, "Backdoor still unavailable after $maxRetries attempts, resetting state for retry...")
             triedCount = 0
             injected = false
+=======
+            Logger.e("Tried injection $maxRetries times but still no backdoor, exiting")
+            exitProcess(1)
+>>>>>>> upstream/main
         }
 
         if (!injected) {
@@ -75,6 +84,7 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
         return false
     }
 
+<<<<<<< HEAD
     private val exactInjectMarker = java.io.File("./.apatch_exact_inject_v1").isFile
     private val suBin = java.io.File("/system/bin/su")
 
@@ -88,6 +98,13 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
             false
         }
     }
+=======
+    protected open fun performInjection() {
+        Logger.i("Attempting to inject into $processName...")
+
+        val command = arrayOf("/system/bin/sh", "-c", injectionCommand)
+        Logger.d("Injection command: ${command.joinToString(" ")}")
+>>>>>>> upstream/main
 
     protected open fun performInjection(): Boolean {
         val useExactInject = exactInjectMarker && apatchInjectCapable()
@@ -125,18 +142,26 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
         }
 
         if (process.waitFor() != 0) {
+<<<<<<< HEAD
             Log.e(TAG, "Injection failed, will retry...")
             return false
         }
 
         Log.i(TAG, "Injection completed successfully")
         return true
+=======
+            Logger.e("Injection failed! Daemon will exit")
+            exitProcess(1)
+        }
+
+        Logger.i("Injection completed successfully")
+>>>>>>> upstream/main
     }
 
     protected open fun createDeathRecipient(): IBinder.DeathRecipient =
         object : IBinder.DeathRecipient {
             override fun binderDied() {
-                Log.d(TAG, "$serviceName died, daemon restarting")
+                Logger.d("$serviceName died, daemon restarting")
                 exitProcess(0)
             }
         }
@@ -202,12 +227,15 @@ object InterceptorUtils {
         return BinderInterceptor.OverrideReply(0, p)
     }
 
-    fun String.extractAlias(): String {
-        return when {
-            contains("_") -> split("_")[1]
-            else -> this
-        }
-    }
+    fun String.extractAlias(): String =
+        sequenceOf(
+            Credentials.USER_PRIVATE_KEY,
+            Credentials.USER_SECRET_KEY,
+            Credentials.USER_CERTIFICATE,
+            Credentials.CA_CERTIFICATE,
+        ).firstNotNullOfOrNull { prefix ->
+            if (startsWith(prefix) && length > prefix.length) substring(prefix.length) else null
+        } ?: this
 
     fun Parcel.hasException(): Boolean {
         return runCatching { readException() }.exceptionOrNull() != null

@@ -16,10 +16,9 @@ import android.os.ServiceSpecificException
 import android.security.keymaster.KeymasterDefs
 import android.security.keystore.KeyProperties
 import android.system.keystore2.KeyDescriptor
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.File
 import java.math.BigInteger
 import java.nio.ByteBuffer
@@ -54,6 +53,8 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 object CertificateGen {
+    enum class AuthPolicyProvenance { UNKNOWN, RAW_REQUEST }
+
     data class KeyBox(val keyPair: KeyPair, val certificates: List<Certificate>)
 
     data class KeyGenParameters(
@@ -72,6 +73,15 @@ object CertificateGen {
         var blockMode: MutableList<Int> = mutableListOf(),
         var mgfDigest: MutableList<Int> = mutableListOf(),
         var usageCountLimit: Int = 0,
+        var maxUsesPerBoot: Int = 0,
+        var userSecureIds: MutableList<Long> = mutableListOf(),
+        var userAuthType: Int? = null,
+        var authTimeout: Int? = null,
+        var allowWhileOnBody: Boolean? = null,
+        var trustedUserPresenceRequired: Boolean? = null,
+        var trustedConfirmationRequired: Boolean? = null,
+        var authPolicyProvenance: AuthPolicyProvenance = AuthPolicyProvenance.UNKNOWN,
+        var createdAtMs: Long? = null,
         var callerNonce: Boolean? = null,
         var unlockedDeviceRequired: Boolean? = null,
         var activeDateTime: Long? = null,
@@ -92,6 +102,7 @@ object CertificateGen {
         var origin: Int? = null,
     ) {
         constructor(params: Array<KeyParameter>) : this() {
+            var authPolicyParsed = true
             params.forEach { p ->
                 runCatching {
                         val v = p.value
@@ -113,7 +124,13 @@ object CertificateGen {
                             Tag.BLOCK_MODE -> blockMode.add(v.blockMode)
                             Tag.RSA_OAEP_MGF_DIGEST -> mgfDigest.add(v.digest)
                             Tag.USAGE_COUNT_LIMIT -> usageCountLimit = v.integer
-                            Tag.MAX_USES_PER_BOOT -> if (usageCountLimit == 0) usageCountLimit = v.integer
+                            Tag.MAX_USES_PER_BOOT -> maxUsesPerBoot = v.integer
+                            Tag.USER_SECURE_ID -> userSecureIds.add(v.longInteger)
+                            Tag.USER_AUTH_TYPE -> userAuthType = v.hardwareAuthenticatorType
+                            Tag.AUTH_TIMEOUT -> authTimeout = v.integer
+                            Tag.ALLOW_WHILE_ON_BODY -> allowWhileOnBody = v.boolValue
+                            Tag.TRUSTED_USER_PRESENCE_REQUIRED -> trustedUserPresenceRequired = v.boolValue
+                            Tag.TRUSTED_CONFIRMATION_REQUIRED -> trustedConfirmationRequired = v.boolValue
                             Tag.CALLER_NONCE -> callerNonce = v.boolValue
                             Tag.UNLOCKED_DEVICE_REQUIRED -> unlockedDeviceRequired = v.boolValue
                             Tag.ACTIVE_DATETIME -> activeDateTime = v.dateTime
@@ -134,10 +151,33 @@ object CertificateGen {
                             Tag.ORIGIN -> origin = v.origin
                         }
                     }
-                    .onFailure { Log.d(TAG, "Skipping key parameter tag=${p.tag}: ${it.message}") }
+                    .onFailure {
+                        if (
+                            p.tag == Tag.USER_SECURE_ID || p.tag == Tag.USER_AUTH_TYPE || p.tag == Tag.AUTH_TIMEOUT ||
+                                p.tag == Tag.ALLOW_WHILE_ON_BODY || p.tag == Tag.TRUSTED_USER_PRESENCE_REQUIRED ||
+                                p.tag == Tag.TRUSTED_CONFIRMATION_REQUIRED || p.tag == Tag.UNLOCKED_DEVICE_REQUIRED ||
+                                p.tag == Tag.NO_AUTH_REQUIRED
+                        )
+                            authPolicyParsed = false
+                        Logger.d("Skipping key parameter tag=${p.tag}: ${it.message}")
+                    }
             }
+            authPolicyProvenance =
+                if (authPolicyParsed) AuthPolicyProvenance.RAW_REQUEST else AuthPolicyProvenance.UNKNOWN
             if (ecCurveName == null && keySize != 0) ecCurveName = resolveEcCurveName(0, keySize)
         }
+
+        val noAuthRequiredIsValid: Boolean
+            get() =
+                authPolicyProvenance == AuthPolicyProvenance.RAW_REQUEST &&
+                    noAuthRequired == true &&
+                    userSecureIds.isEmpty() &&
+                    userAuthType == null &&
+                    authTimeout == null &&
+                    allowWhileOnBody != true &&
+                    trustedUserPresenceRequired != true &&
+                    trustedConfirmationRequired != true &&
+                    unlockedDeviceRequired != true
     }
 
     private data class EcCurveInfo(val curve: Int, val name: String, val size: Int)
@@ -162,14 +202,14 @@ object CertificateGen {
         val raw = runCatching {
             when (params.algorithm) {
                 Algorithm.EC -> {
-                    Log.d(TAG, "Generating EC keypair of size ${params.keySize}")
+                    Logger.d("Generating EC keypair of size ${params.keySize}")
                     KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
                         .apply { initialize(ECGenParameterSpec(params.ecCurveName ?: "secp256r1")) }
                         .generateKeyPair()
                 }
 
                 Algorithm.RSA -> {
-                    Log.d(TAG, "Generating RSA keypair of size ${params.keySize}")
+                    Logger.d("Generating RSA keypair of size ${params.keySize}")
                     KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME)
                         .apply {
                             initialize(
@@ -183,12 +223,12 @@ object CertificateGen {
                 }
 
                 else -> {
-                    Log.i(TAG, "Skipping non-EC/non-RSA algorithm: ${params.algorithm}")
+                    Logger.i("Skipping non-EC/non-RSA algorithm: ${params.algorithm}")
                     null
                 }
             }
         }
-        return raw.onFailure { Log.e(TAG, "Failed to generate key pair", it) }.getOrNull()
+        return raw.onFailure { Logger.e("Failed to generate key pair", it) }.getOrNull()
     }
 
     fun generateKeyPair(
@@ -199,19 +239,23 @@ object CertificateGen {
         securityLevel: Int = 1,
     ): Pair<KeyPair, List<Certificate>>? {
         val raw = runCatching {
-            Log.i(TAG, "Requested KeyPair with alias: ${descriptor.alias}")
-            attestKeyDescriptor?.let { Log.i(TAG, "Requested KeyPair with attestKey: ${it.alias}") }
+            Logger.i("Requested KeyPair with alias: ${descriptor.alias}")
+            attestKeyDescriptor?.let { Logger.i("Requested KeyPair with attestKey: ${it.alias}") }
 
+            params.createdAtMs = params.createdAtMs ?: System.currentTimeMillis()
             val keyPair = generateKeyPair(params) ?: return null
             val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
             if (keybox.certificates.isEmpty()) {
-                Log.e(TAG, "Keybox has no certificates")
+                Logger.e("Keybox has no certificates")
                 return null
             }
 
             val signing =
-                attestKeyDescriptor?.let { getAttestationKeyInfo(uid, it) }
-                    ?: (keybox.keyPair to X509CertificateHolder(keybox.certificates[0].encoded).subject)
+                if (attestKeyDescriptor != null) {
+                    getAttestationKeyInfo(uid, attestKeyDescriptor, securityLevel)
+                } else {
+                    keybox.keyPair to X509CertificateHolder(keybox.certificates[0].encoded).subject
+                }
 
             val leaf = buildCertificate(keyPair, keybox, params, signing.second, uid, securityLevel, signing.first)
             val chain = buildList {
@@ -220,7 +264,8 @@ object CertificateGen {
             }
             keyPair to chain
         }
-        return raw.onFailure { Log.e(TAG, "Failed to generate key pair with certificates", it) }.getOrNull()
+        raw.exceptionOrNull()?.let { if (it is ServiceSpecificException) throw it }
+        return raw.onFailure { Logger.e("Failed to generate key pair with certificates", it) }.getOrNull()
     }
 
     private fun getKeyboxForAlgorithm(algorithm: Int): KeyBox? {
@@ -231,28 +276,60 @@ object CertificateGen {
                 Algorithm.RSA -> KeyProperties.KEY_ALGORITHM_RSA
 
                 else -> {
-                    Log.e(TAG, "Unsupported algorithm: $algorithm")
+                    Logger.e("Unsupported algorithm: $algorithm")
                     null
                 }
             } ?: return null
         return KeyBoxUtils.keyboxes[name] ?: KeyBoxUtils.keyboxes.values.firstOrNull()
     }
 
-    private fun getAttestationKeyInfo(uid: Int, descriptor: KeyDescriptor): Pair<KeyPair, X500Name> {
-        val alias =
-            descriptor.alias
-                ?: SecurityLevelInterceptor.findAliasForNspace(uid, descriptor.nspace)
-                ?: throw ServiceSpecificException(
-                    KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
-                    "Designated attest key not resolvable (nspace=${descriptor.nspace}) for uid $uid",
-                )
-        val keyInfo =
-            SecurityLevelInterceptor.getKeyPairs(uid, alias)
-                ?: throw ServiceSpecificException(
-                    KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
-                    "Designated attest key not found for uid $uid alias=$alias",
-                )
-        return keyInfo.first to X509CertificateHolder(keyInfo.second[0].encoded).subject
+    private fun getAttestationKeyInfo(
+        uid: Int,
+        descriptor: KeyDescriptor,
+        securityLevel: Int,
+    ): Pair<KeyPair, X500Name> {
+        val resolved = SecurityLevelInterceptor.resolveDesignatedAttestationKey(uid, descriptor)
+            ?: throw ServiceSpecificException(
+                KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                "Designated attestation key not found",
+            )
+        if (!resolved.allowed) {
+            throw ServiceSpecificException(
+                android.system.keystore2.ResponseCode.PERMISSION_DENIED,
+                "Designated attestation key access denied",
+            )
+        }
+        val info = resolved.info
+            ?: throw ServiceSpecificException(
+                KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                "Designated attestation key is unresolved",
+            )
+        val keyPair = info.keyPair
+        val certificates =
+            info.response.metadata?.certificate?.let { leaf ->
+                CertificateUtils.run { leaf.toCertificates() }
+            }
+        val storedPurposes =
+            info.response.metadata?.authorizations
+                ?.filter { it.securityLevel == securityLevel && it.keyParameter.tag == Tag.PURPOSE }
+                ?.map { it.keyParameter.value.keyPurpose }
+        val attestPurpose = storedPurposes == listOf(KeyPurpose.ATTEST_KEY)
+        val supportedAlgorithm = keyPair?.private is java.security.interfaces.ECPrivateKey ||
+            keyPair?.private is java.security.interfaces.RSAPrivateKey
+        if (
+            !attestPurpose ||
+                info.params.purpose != listOf(KeyPurpose.ATTEST_KEY) ||
+                !supportedAlgorithm ||
+                certificates.isNullOrEmpty() ||
+                !certificates.first().publicKey.encoded.contentEquals(keyPair!!.public.encoded)
+        ) {
+            throw ServiceSpecificException(
+                KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                "Designated attest key is invalid for security level $securityLevel",
+            )
+        }
+        val signingKey = keyPair!!
+        return signingKey to X509CertificateHolder(certificates.first().encoded).subject
     }
 
     private fun buildCertificate(
@@ -264,6 +341,7 @@ object CertificateGen {
         securityLevel: Int = 1,
         signingKeyPair: KeyPair = keybox.keyPair,
     ): Certificate {
+        val creationTimeMs = params.createdAtMs ?: System.currentTimeMillis().also { params.createdAtMs = it }
         val builder =
             JcaX509v3CertificateBuilder(
                 issuer,
@@ -286,7 +364,7 @@ object CertificateGen {
                     }
             }
         if (keyUsageBits != 0) builder.addExtension(Extension.keyUsage, true, KeyUsage(keyUsageBits))
-        builder.addExtension(buildAttestExtension(params, uid, securityLevel))
+        builder.addExtension(buildAttestExtension(params, uid, securityLevel, creationTimeMs))
         val signerAlgorithm =
             when (signingKeyPair.private) {
                 is java.security.interfaces.ECPrivateKey -> "ECDSA"
@@ -313,15 +391,21 @@ object CertificateGen {
 
     fun generateChain(uid: Int, params: KeyGenParameters, keyPair: KeyPair, securityLevel: Int = 1): List<ByteArray>? {
         val raw = runCatching {
+            params.createdAtMs = params.createdAtMs ?: System.currentTimeMillis()
             val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
             val issuer = X509CertificateHolder(keybox.certificates[0].encoded).subject
             val leaf = buildCertificate(keyPair, keybox, params, issuer, uid, securityLevel)
             (listOf(leaf) + keybox.certificates).map { it.encoded }
         }
-        return raw.onFailure { Log.e(TAG, "Failed to generate certificate chain", it) }.getOrNull()
+        return raw.onFailure { Logger.e("Failed to generate certificate chain", it) }.getOrNull()
     }
 
-    private fun buildAttestExtension(params: KeyGenParameters, uid: Int, securityLevel: Int = 1): Extension {
+    private fun buildAttestExtension(
+        params: KeyGenParameters,
+        uid: Int,
+        securityLevel: Int = 1,
+        creationTimeMs: Long,
+    ): Extension {
         val versions = AndroidUtils.attestationVersions(securityLevel)
         val attestationVersion = versions.attestation
         val keymasterVersion = versions.keymaster
@@ -330,7 +414,6 @@ object CertificateGen {
         val rootOfTrust =
             DERSequence(arrayOf(DEROctetString(key), ASN1Boolean.TRUE, ASN1Enumerated(0), DEROctetString(hash)))
         val osVersion = ASN1Integer(AndroidUtils.osVersion.toLong())
-        val creationTimeMs = System.currentTimeMillis()
         val creationDateTime = ASN1Integer(creationTimeMs)
         val origin = ASN1Integer((params.origin ?: 0).toLong())
         val moduleHash = DEROctetString(AndroidUtils.moduleHash)
@@ -355,7 +438,15 @@ object CertificateGen {
         val effectiveKey = effectiveKeySize(params)
         if (effectiveKey > 0) teeTag(3, ASN1Integer(effectiveKey.toLong()))
         teeSet(5, params.digest)
-        if (params.noAuthRequired == true) teeTag(503, DERNull.INSTANCE)
+        params.userSecureIds.takeIf { it.isNotEmpty() }?.let { ids ->
+            teeTag(502, DERSet(ids.map { ASN1Integer(it) }.toTypedArray()))
+        }
+        params.userAuthType?.let { teeTag(504, ASN1Integer(it.toLong())) }
+        params.authTimeout?.let { teeTag(505, ASN1Integer(it.toLong())) }
+        if (params.allowWhileOnBody == true) teeTag(506, DERNull.INSTANCE)
+        if (params.trustedUserPresenceRequired == true) teeTag(507, DERNull.INSTANCE)
+        if (params.trustedConfirmationRequired == true) teeTag(508, DERNull.INSTANCE)
+        if (params.noAuthRequiredIsValid) teeTag(503, DERNull.INSTANCE)
         if (params.callerNonce == true) teeTag(1005, DERNull.INSTANCE)
         teeTag(702, origin)
         teeTag(704, rootOfTrust)
@@ -389,6 +480,7 @@ object CertificateGen {
         params.activeDateTime?.let { sw.add(DERTaggedObject(true, 400, ASN1Integer(it))) }
         params.originationExpireDateTime?.let { sw.add(DERTaggedObject(true, 401, ASN1Integer(it))) }
         params.usageExpireDateTime?.let { sw.add(DERTaggedObject(true, 402, ASN1Integer(it))) }
+        if (params.maxUsesPerBoot > 0) sw.add(DERTaggedObject(true, 404, ASN1Integer(params.maxUsesPerBoot.toLong())))
         if (params.usageCountLimit > 0) sw.add(DERTaggedObject(true, 405, ASN1Integer(params.usageCountLimit.toLong())))
         if (params.unlockedDeviceRequired == true) sw.add(DERTaggedObject(true, 509, DERNull.INSTANCE))
         if (applicationId != null) sw.add(DERTaggedObject(true, 709, applicationId))
@@ -436,7 +528,7 @@ object CertificateGen {
         val pm = PkgConfig.getPm() ?: throw IllegalStateException("PackageManager not found!")
         val packages = pm.getPackagesForUid(uid) ?: throw IllegalStateException("No packages for UID $uid")
         val md = MessageDigest.getInstance("SHA-256")
-        val signatures = LinkedHashSet<ByteArray>()
+        val signatures = LinkedHashMap<String, ByteArray>()
 
         val packageInfoArray =
             packages
@@ -447,8 +539,15 @@ object CertificateGen {
                         } else {
                             pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES, uid / 100000)
                         }
-                    info.signingInfo?.signingCertificateHistory?.forEach { sig ->
-                        signatures.add(md.digest(sig.toByteArray()))
+                    val signingHistory = info.signingInfo?.signingCertificateHistory
+                        ?: throw IllegalStateException("No signing history for package ${info.packageName}")
+                    if (signingHistory.isEmpty()) {
+                        throw IllegalStateException("Empty signing history for package ${info.packageName}")
+                    }
+                    signingHistory.forEach { sig ->
+                        val digest = md.digest(sig.toByteArray())
+                        val key = digest.joinToString("") { "%02x".format(it) }
+                        signatures.putIfAbsent(key, digest)
                     }
                     info
                 }
@@ -462,7 +561,7 @@ object CertificateGen {
                 }
                 .toTypedArray()
 
-        val sigArray = signatures.map { DEROctetString(it) }.toTypedArray()
+        val sigArray = signatures.values.map { DEROctetString(it) }.toTypedArray()
         return DEROctetString(DERSequence(arrayOf(DERSet(packageInfoArray), DERSet(sigArray))).encoded)
     }
 }

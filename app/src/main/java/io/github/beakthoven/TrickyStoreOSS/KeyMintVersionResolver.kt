@@ -8,11 +8,11 @@ package io.github.beakthoven.TrickyStoreOSS
 import android.hardware.security.keymint.IKeyMintDevice
 import android.hardware.security.keymint.SecurityLevel
 import android.os.Build
+import android.os.IBinder
+import android.os.Parcel
 import android.os.ServiceManager
-import android.security.compat.IKeystoreCompatService
-import android.util.Log
 import androidx.annotation.RequiresApi
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 
 /** Resolves versions from Android 12+ native KeyMint and legacy Keymaster backends. */
 @RequiresApi(Build.VERSION_CODES.S)
@@ -39,8 +39,8 @@ internal object KeyMintVersionResolver {
                 val version = interfaceVersion * 100
                 AndroidUtils.AttestationVersions(version, version)
             }
-            .onSuccess { versions -> if (versions != null) Log.i(TAG, "Resolved $serviceName versions: $versions") }
-            .onFailure { Log.w(TAG, "Failed to query $serviceName interface version", it) }
+            .onSuccess { versions -> if (versions != null) Logger.i("Resolved $serviceName versions: $versions") }
+            .onFailure { Logger.w("Failed to query $serviceName interface version", it) }
             .getOrNull()
     }
 
@@ -53,13 +53,31 @@ internal object KeyMintVersionResolver {
             else -> null
         }
 
+    private const val COMPAT_DESCRIPTOR = "android.security.compat.IKeystoreCompatService"
+    private const val TRANSACTION_GET_KEYMINT_DEVICE = IBinder.FIRST_CALL_TRANSACTION
+
+    private fun compatKeyMintDevice(binder: IBinder, securityLevel: Int): IKeyMintDevice? {
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        return try {
+            data.writeInterfaceToken(COMPAT_DESCRIPTOR)
+            data.writeInt(securityLevel)
+            if (!binder.transact(TRANSACTION_GET_KEYMINT_DEVICE, data, reply, 0)) return null
+            reply.readException()
+            reply.readStrongBinder()?.let { IKeyMintDevice.Stub.asInterface(it) }
+        } finally {
+            reply.recycle()
+            data.recycle()
+        }
+    }
+
     private fun compatKeymasterVersions(securityLevel: Int): AndroidUtils.AttestationVersions? {
         val serviceName = "android.security.compat"
         val binder = ServiceManager.checkService(serviceName) ?: return null
 
         return runCatching {
-                val compat = IKeystoreCompatService.Stub.asInterface(binder)
-                val keyMint = compat.getKeyMintDevice(securityLevel)
+                val keyMint = compatKeyMintDevice(binder, securityLevel)
+                    ?: error("No compat KeyMint device for level $securityLevel")
                 val hardwareInfo = keyMint.hardwareInfo
                 require(hardwareInfo.securityLevel == securityLevel) {
                     "Compat KeyMint security level ${hardwareInfo.securityLevel}, requested $securityLevel"
@@ -67,8 +85,8 @@ internal object KeyMintVersionResolver {
                 legacyKeymasterVersions(hardwareInfo.versionNumber)
                     ?: error("Unsupported legacy Keymaster version: ${hardwareInfo.versionNumber}")
             }
-            .onSuccess { versions -> Log.i(TAG, "Resolved $serviceName level=$securityLevel versions: $versions") }
-            .onFailure { Log.w(TAG, "Failed to query $serviceName level=$securityLevel", it) }
+            .onSuccess { versions -> Logger.i("Resolved $serviceName level=$securityLevel versions: $versions") }
+            .onFailure { Logger.w("Failed to query $serviceName level=$securityLevel", it) }
             .getOrNull()
     }
 }
