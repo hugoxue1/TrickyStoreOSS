@@ -1,4 +1,5 @@
 MODDIR=${0%/*}
+rm -f "$MODDIR/.daemon.lock" 2>/dev/null
 
 # Start TrickyStore daemon in background
 # APatch domainless mode does not execute service.sh, so we start
