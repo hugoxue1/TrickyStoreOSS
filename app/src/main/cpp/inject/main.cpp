@@ -435,7 +435,10 @@ public:
             detach_failed_ = true;
             return false;
         }
-        if (ptrace(PTRACE_DETACH, pid_, 0, reinterpret_cast<void *>(static_cast<intptr_t>(detach_signal_))) == -1) {
+        // [v3.1.1-ckb1 修复] PTRACE_DETACH 携带信号在 MIUI A11 跨 SELinux 上下文时 EPERM
+        // （avc denied signal 实证）→ detach 失败 → keystore 遗留 ptrace-stopped 冻结。
+        // 改为无信号干净分离（成功路径 pending_signal 本为 0，语义不变）。
+        if (ptrace(PTRACE_DETACH, pid_, 0, 0) == -1) {
             PLOGE("Failed to detach from process %d", pid_);
             detach_failed_ = true;
             return false;

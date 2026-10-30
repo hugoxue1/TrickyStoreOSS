@@ -10,6 +10,10 @@
 
 MODDIR=$1
 
+# 内核级单实例锁：并发启动路径（post-fs-data 与 keeper）只有一个能持锁
+exec 9<>$MODDIR/.daemon.lock
+flock -n 9 || exit 0
+
 i=0
 while [ $i -lt 300 ]; do
     [ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ] && break
