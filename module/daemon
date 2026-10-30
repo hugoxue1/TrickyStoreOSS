@@ -1,6 +1,32 @@
 #!/system/bin/sh
 
+# [v3.1.1-ckb1 竞态修复] 任何启动路径（keeper/post-fs-data/service.sh）统一走这里：
+# 1. 等 sys.boot_completed=1（system_server 完全就绪）——注入过早会与
+#    system_server 启动初期的 keystore2 同步调用（LockdownVpnTracker→exist）
+#    互锁 → watchdog 杀 system_server → MIUI 开机循环（2026-10-30 实证）；
+# 2. 等 init.svc.keystore=running（keystore2 服务就绪）；
+# 3. 单实例守卫（已有 TrickyStoreOSS 进程则本实例退出）；
+# 4. 全部就绪后才 exec 注入。上限 300s/120s，防极端死等。
+
 MODDIR=$1
+
+i=0
+while [ $i -lt 300 ]; do
+    [ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+
+i=0
+while [ $i -lt 120 ]; do
+    [ "$(getprop init.svc.keystore 2>/dev/null)" = "running" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+
+for pid in $(pgrep -f TrickyStoreOSS 2>/dev/null); do
+    [ "$pid" != "$$" ] && exit 0
+done
 
 # Determine classpath — prefer service.apk (full APK with manifest),
 # fall back to classes.dex (bare dex, may not work on all Android versions)
