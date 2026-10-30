@@ -222,9 +222,14 @@ object PkgConfig {
         val raw = runCatching {
             val ps = packagesForUid(callingUid) ?: return false
             val result = currentProbe()
+            // [v3.1.1-ckb1 兜底] probe 在 APatch daemon（app_process 无 Application Context）
+            // 上下文必然假阴性 FAILED（IllegalStateException，tee_status 实证）。上游把 FAILED
+            // 判到 GENERATE（软件签名证书）——Hunter TEE check 必检出，对我们不可接受。
+            // 兜底：FAILED 时仍走 LEAF_HACK（hack 真 TEE 证书链），与旧版强制 teeBroken=false
+            // 的验证行为一致。UNAVAILABLE（服务未起）维持 null=不拦截。
             val autoMode = when (result.status) {
                 ProbeStatus.AVAILABLE -> Mode.LEAF_HACK
-                ProbeStatus.FAILED -> Mode.GENERATE
+                ProbeStatus.FAILED -> Mode.LEAF_HACK
                 ProbeStatus.UNAVAILABLE -> null
             }
             ps.any { pkg ->
