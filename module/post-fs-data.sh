@@ -22,6 +22,17 @@ done
 # the daemon needs to keep retrying until the system is fully booted.
 (
   cd "$MODDIR"
+  # [v3.1.1-ckb1 竞态修复] keystore2 注入与 system_server 启动存在竞态：
+  # system_server 初始化会同步调 keystore2（LockdownVpnTracker→exist），若撞上
+  # 注入进行中的 ptrace attach，事务永久卡死 → watchdog 杀 system_server
+  # → MIUI 动画阶段开机循环（2026-10-30 实证，release 版时序变快后必现）。
+  # 后台等 sys.boot_completed=1（不阻塞启动阶段）后再开始注入。
+  j=0
+  while [ $j -lt 300 ]; do
+    [ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ] && break
+    sleep 1
+    j=$((j + 1))
+  done
   while true; do
     ./daemon "$MODDIR"
     sleep 2
