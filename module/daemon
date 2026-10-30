@@ -10,9 +10,13 @@
 
 MODDIR=$1
 
-# 内核级单实例锁：并发启动路径（post-fs-data 与 keeper）只有一个能持锁
-exec 9<>$MODDIR/.daemon.lock
-flock -n 9 || exit 0
+# 单实例锁（Android 无 flock 命令）：锁文件 + pid 存活校验。
+# post-fs-data.sh 每次开机清理旧锁文件，故无跨 boot 残留问题。
+if [ -e "$MODDIR/.daemon.lock" ]; then
+    LP=$(cat "$MODDIR/.daemon.lock" 2>/dev/null)
+    [ -n "$LP" ] && [ -d "/proc/$LP" ] && exit 0
+fi
+echo $$ > "$MODDIR/.daemon.lock"
 
 i=0
 while [ $i -lt 300 ]; do
