@@ -25,8 +25,13 @@ while [ $i -lt 300 ]; do
     i=$((i + 1))
 done
 
+# [2026-11-05 修复] 双命名等待：MI9 MIUI-A11 服务名 = keystore（init.svc.keystore），
+# A13+/标准 AOSP = keystore2（init.svc.keystore2）。v3.1.1-ckb1 原版只查
+# init.svc.keystore——在 A13 上属性永不存在 → 白等满 120s（叠加 post-fs-data
+# 层与 java 健康门共三层等待，注入被无谓推迟 ~4min）。217 号档。
 i=0
 while [ $i -lt 120 ]; do
+    [ "$(getprop init.svc.keystore2 2>/dev/null)" = "running" ] && break
     [ "$(getprop init.svc.keystore 2>/dev/null)" = "running" ] && break
     sleep 1
     i=$((i + 1))
