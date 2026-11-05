@@ -187,9 +187,12 @@ androidComponents {
                 val apk = apks.single()
 
                 ZipFile(apk).use { zip ->
-                    if (variantName.contains("debug", ignoreCase = true)) {
-                        apk.copyTo(tempDir.resolve("service.apk"), overwrite = true)
-                    } else {
+                    // [2026-11-05 修复] service.apk 必须所有变体都产出——release 旧逻辑只抽
+                    // classes.dex，A11(MI9) 的 app_process 无法从裸 dex 找到 MainKt
+                    // → daemon 静默死亡 → 无注入 → momo 报 TEE broken（217 号档 MI9 实录）。
+                    // release APK 在签名链修复(c653d35/e67569b)后是真签好名的 APK，可直接做 CLASSPATH。
+                    apk.copyTo(tempDir.resolve("service.apk"), overwrite = true)
+                    if (!variantName.contains("debug", ignoreCase = true)) {
                         val dex = zip.getEntry("classes.dex") ?: error("Release APK does not contain classes.dex")
                         zip.getInputStream(dex).use { input ->
                             tempDir.resolve("classes.dex").outputStream().use(input::copyTo)
