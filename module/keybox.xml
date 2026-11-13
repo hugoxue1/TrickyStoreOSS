@@ -1,10 +1,3 @@
-<!--
-  ⚠⚠ 部署警示（2026-11-05 MI9 实测定谳，217 号档 §7.1e 终局结论）⚠⚠
-  本钥匙箱 = 旧软件系谱版（EC 叶子 2026-01-08 过期）——**勿换成 TEE 系谱钥匙箱**：
-  Momo v4.4.1 的 TEE 校验认得 TEE 系谱链（title=TEE serial=97523f88 系），
-  换装后 momo 报 "TEE 损坏"；本旧软件箱 momo/Hunter 均不识别（实测通过）。
-  过期对 momo/Hunter 的 TEE 校验无影响（两家均不深验有效期）。
--->
 <?xml version="1.0"?><AndroidAttestation><NumberOfKeyboxes>1</NumberOfKeyboxes><Keybox DeviceID="Luis tryigit.dev/keybox"><Key algorithm="ecdsa"><PrivateKey format="pem">-----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIIBZDz9z0NTb84moU2QSym9neuekblgPcGGV655g+R3EoAoGCCqGSM49
 AwEHoUQDQgAE5gfrobPeK8geG1hypT7aFSpJi55qDUZ+uLwVTFOUQDIp/jlCGlCC
