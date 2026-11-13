@@ -172,3 +172,18 @@ PRs welcome. Thanks for backing real open-source work.
 - [PLTI](https://github.com/PerformanC/PLTI)
 - [LSPosed](https://github.com/LSPosed/LSPosed)
 - [PlayIntegrityFork](https://github.com/osm0sis/PlayIntegrityFork)
+
+## ⚠️ keybox.xml 部署警示（2026-11-13 A13 事故，勿重蹈）
+
+本钥匙箱 = 旧软件系谱版（EC 叶子 2026-01-08 过期）——**勿换成 TEE 系谱钥匙箱**：
+Momo v4.4.1 的 TEE 校验认得 TEE 系谱链（title=TEE serial=97523f88 系），换装后
+momo 报 "TEE 损坏"；本旧软件箱 momo/Hunter 均不识别（实测通过）。过期对
+momo/Hunter 的 TEE 校验无影响（两家均不深验有效期）。
+
+**结构纪律（2026-11-13 A13 事故教训，100 号档 §十三）**：
+- `module/keybox.xml` 的 `<?xml?>` 声明必须在**文件第 1 行第 1 字节**——
+  声明前不能有任何字节（包括注释/空行/BOM）。a41a99c 曾把部署警示注释拼在
+  声明之前 → TS 解析必失败（XmlPullParserException）→ 拦截退化 → Hunter
+  三卡报险（属性/证书矛盾）。已修复（0aadaaf 前身）。
+- **打包/部署后必须跑解析器校验**：`python -c "import
+  xml.etree.ElementTree as ET; ET.parse('module/keybox.xml')"`。
