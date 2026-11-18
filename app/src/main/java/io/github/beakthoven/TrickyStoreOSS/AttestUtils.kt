@@ -136,13 +136,23 @@ object AttestUtils {
     private fun probeKeystore2(): ProbeResult = Keystore2Probe.run()
 
     private object Keystore2Probe {
+        // [v3.1.2-ckb1] 增加 AAID provider 实际等待时长日志——为后续评估缩短
+        // AAID_PROVIDER_TIMEOUT_MS（现值 120s 不动）积累设备实测数据
         private fun waitForAaidProvider(): Boolean {
-            val deadline = SystemClock.elapsedRealtime() + AAID_PROVIDER_TIMEOUT_MS
+            val waitStart = SystemClock.elapsedRealtime()
+            val deadline = waitStart + AAID_PROVIDER_TIMEOUT_MS
             while (ServiceManager.checkService(AAID_PROVIDER) == null) {
                 val remaining = deadline - SystemClock.elapsedRealtime()
-                if (remaining <= 0) return false
+                if (remaining <= 0) {
+                    Logger.w(
+                        "AAID provider not present after " +
+                            "${SystemClock.elapsedRealtime() - waitStart}ms (aaid wait exhausted)",
+                    )
+                    return false
+                }
                 Thread.sleep(minOf(AAID_POLL_INTERVAL_MS, remaining))
             }
+            Logger.i("AAID provider present after ${SystemClock.elapsedRealtime() - waitStart}ms wait")
             return true
         }
 
