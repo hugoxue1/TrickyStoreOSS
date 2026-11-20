@@ -4,6 +4,8 @@
 
 A fully open-source, FOSS alternative to the proprietary [TrickyStore](https://github.com/5ec1cff/TrickyStore) Magisk module.
 
+> ckb lineage version record: see [CHANGELOG-ckb.md](CHANGELOG-ckb.md)
+
 ---
 
 ## Why this exists
