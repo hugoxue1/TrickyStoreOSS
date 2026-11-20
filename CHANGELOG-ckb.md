@@ -64,8 +64,9 @@
 
 | 设备 | 日期 | 结果 |
 |---|---|---|
-| A13（22095RA98C，MIUI14/A13，keystore2） | 2026-11-18 夜 | 全套实测闭环：注入 boot+46.2s（旧版 ~155s）；Hunter v6.72 108 项高风险 0；Momo v4.4.1 双绿（仅 Debugging mode）；12 分钟稳定（三进程零重启、FATAL 0）。证据：`docs/工程项目总览/改机环境治理/218_TrickyStoreOSS开机生效窗口压缩_健康门多信号改造_2026-11-18.md` §三/§四 |
-| MI9（cepheus，MIUI/A11，legacy `keystore`） | 2026-11-19 凌晨 | 装机成功（module.prop 显 v3.1.2 (232)，含 service.apk 3429399B）；00:04 reboot 后 adb 未回归，**时延/门退出路径/三件套/Hunter/Momo/12min 复测未闭环**。证据：同上 218 号档 §六 |
+| A13（22095RA98C，MIUI14/A13，keystore2） | 2026-11-18 夜 | 全套实测闭环：注入 boot+46.2s（旧版 ~155s）；Hunter v6.72 108 项高风险 0；Momo v4.4.1 双绿（仅 Debugging mode）；12 分钟稳定（三进程零重启、FATAL 0）。证据：`docs/工程项目总览/改机环境治理/218_TrickyStoreOSS开机生效窗口压缩_健康门多信号改造_2026-11-18.md` §三/§四。**2026-11-21 用户复测确认 A13 Hunter OK ✓** |
+| MI9（cepheus，MIUI/A11，legacy `keystore`） | 2026-11-19 凌晨 | 装机成功（module.prop 显 v3.1.2 (232)，含 service.apk 3429399B）；00:04 reboot 后 adb 未回归。**11-20 复测闭环**（当日 Hunter 判定受 12:43 模板灌入的损坏 keybox 干扰走了弯路，模块本体功能正常；11-20 深夜升 v3.1.3 后双绿，见下行）。证据：同上 218 号档 §六/§七 |
+| MI9（cepheus，MIUI/A11，legacy `keystore`） | 2026-11-20 深夜 | **v3.1.3-236 + sw 旧软件箱 + hunter/momo 在 target：Hunter v6.72 绿 + Momo v4.4.1 绿（双绿，11-07 平衡态复现）**；文件环形日志/每查询日志/启动横幅首次全程在档。证据：`docs/工程项目总览/219_设备面API切换console域名_激活全量恢复_2026-11-20.md` §七/§八 |
 
 ### 变更
 
