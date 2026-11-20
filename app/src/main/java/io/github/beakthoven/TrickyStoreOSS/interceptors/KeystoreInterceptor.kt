@@ -49,12 +49,21 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
         callingUid: Int,
         callingPid: Int,
         data: Parcel,
-    ): Result =
-        if (KeyBoxUtils.hasKeyboxes() && code == getTransaction && PkgConfig.needHack(callingUid)) {
-            Continue
-        } else {
-            Skip
+    ): Result {
+        // [2026-11-20 日志修盲] legacy 路径补 per-query 日志（与 keystore2 路径同位点、同
+        // 措辞风格）。决策与短路语义保持原样：hasKeyboxes → 事务码 → needHack，仅加日志。
+        if (code != getTransaction) return Skip
+        if (!KeyBoxUtils.hasKeyboxes()) {
+            Logger.d("intercept pre get uid=$callingUid pid=$callingPid; SKIP no-keybox-loaded")
+            return Skip
         }
+        if (!PkgConfig.needHack(callingUid)) {
+            Logger.d("intercept pre get uid=$callingUid pid=$callingPid; SKIP not-in-target")
+            return Skip
+        }
+        Logger.d("intercept pre get uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}; SERVE LEAF_HACK")
+        return Continue
+    }
 
     override fun onPostTransact(
         target: IBinder,
@@ -74,6 +83,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
         try {
             data.enforceInterface(DESCRIPTOR)
             val alias = data.readString() ?: ""
+            Logger.d("get post-hook: uid=$callingUid alias=$alias")
             var response = reply.createByteArray()
             when {
                 alias.startsWith(Credentials.USER_CERTIFICATE) &&
@@ -89,8 +99,13 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
                     return createByteArrayReply(response)
                 }
             }
+            Logger.d("get post-hook: non-certificate alias, forwarding unpatched uid=$callingUid alias=$alias")
         } catch (t: Throwable) {
-            Logger.e("failed to hack certificate chain of uid=$callingUid pid=$callingPid!", t)
+            Logger.e(
+                "failed to hack certificate chain of uid=$callingUid pid=$callingPid; " +
+                    "fell back to original response",
+                t,
+            )
         }
         return Skip
     }

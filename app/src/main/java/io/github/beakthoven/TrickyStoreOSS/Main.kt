@@ -12,6 +12,7 @@ import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.Keystore2Interceptor
 import io.github.beakthoven.TrickyStoreOSS.interceptors.KeystoreInterceptor
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import java.io.File
 import java.security.Security
 import kotlin.system.exitProcess
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -19,7 +20,10 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider
 private const val RETRY_DELAY_MS = 1000L
 
 fun main(args: Array<String>) {
+    // 仅 daemon 进程启用文件环形日志；注入侧（keystore 进程）共享同一 Logger，保持 logcat
+    Logger.enableFileSink = true
     Logger.i("Welcome to TrickyStoreOSS!")
+    logStartupBanner()
     Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
     Security.addProvider(BouncyCastleProvider())
 
@@ -42,6 +46,64 @@ fun main(args: Array<String>) {
         Logger.e("Fatal error in main", e)
         throw e
     }
+}
+
+private const val CONFIG_DIR = "/data/adb/tricky_store"
+private val keyboxDeviceIdRegex = Regex("DeviceID\\s*=\\s*\"([^\"]*)\"")
+private val keyAlgorithmRegex = Regex("<Key\\b[^>]*\\balgorithm\\s*=\\s*\"([^\"]*)\"")
+
+// [2026-11-20 日志修盲] 开机自标识横幅：模块版本/系统/拦截器形态/目标数/keybox 身份在
+// Welcome 后立刻打全——跨模块升级的 boot 日志不再歧义。全部轻量读取（module.prop 版本行
+// + keybox.xml 属性正则 + target.txt 行数统计），不做重解析：正式加载仍由
+// PkgConfig.initialize() 完成（KeyBoxUtils 带快照保护的完整解析不受影响）。
+private fun logStartupBanner() {
+    val flavor =
+        if (Build.VERSION.SDK_INT in Build.VERSION_CODES.Q..Build.VERSION_CODES.R) "legacy-KeystoreInterceptor"
+        else "Keystore2Interceptor"
+    Logger.i(
+        "module=${moduleVersion()} android=${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}) " +
+            "interceptor=$flavor targetPackages=${targetPackageCountSummary()}",
+    )
+    Logger.i(keyboxIdentitySummary())
+}
+
+// daemon cwd = 模块目录（./inject 相对路径依赖同一 cwd），module.prop 就在手边；
+// 读不到时按顺序兜底 classpath 同目录与标准 Magisk 模块路径，再不行如实报 unknown
+private fun moduleVersion(): String {
+    val candidates = mutableListOf(File("module.prop"))
+    System.getProperty("java.class.path")
+        ?.let { cp -> File(cp).absoluteFile.parentFile }
+        ?.let { candidates.add(File(it, "module.prop")) }
+    candidates.add(File("/data/adb/modules/tricky_store/module.prop"))
+    for (file in candidates) {
+        if (!file.isFile) continue
+        val version =
+            runCatching {
+                file.readLines().firstOrNull { it.startsWith("version=") }?.removePrefix("version=")?.trim()
+            }.getOrNull()
+        if (!version.isNullOrEmpty()) return version
+    }
+    return "unknown"
+}
+
+// 只数非空非注释行（含 !/? 模式后缀，与 target.txt 语义一致）；文件缺失报 missing
+private fun targetPackageCountSummary(): String =
+    runCatching {
+        File(CONFIG_DIR, "target.txt").readLines().count { line -> line.substringBefore('#').trim().isNotEmpty() }
+    }.getOrNull()?.toString() ?: "missing"
+
+// 轻量身份提取：DeviceID / Key.algorithm 属性正则直读 keybox.xml；文件缺失或无条目时
+// 如实上报，不抛错
+private fun keyboxIdentitySummary(): String {
+    val file = File(CONFIG_DIR, "keybox.xml")
+    val text = runCatching { file.takeIf { it.isFile }?.readText() }.getOrNull()
+        ?: return "keybox: none loaded (${file.path} not found)"
+    val deviceIds =
+        keyboxDeviceIdRegex.findAll(text).map { it.groupValues[1] }.filter { it.isNotBlank() }.toList()
+    val algorithms =
+        keyAlgorithmRegex.findAll(text).map { it.groupValues[1] }.filter { it.isNotBlank() }.distinct().toList()
+    val devicePart = if (deviceIds.isEmpty()) "<none found>" else deviceIds.joinToString(", ")
+    return "keybox: DeviceID=[$devicePart] algorithms=[${algorithms.joinToString(", ")}]"
 }
 
 private const val MAX_INIT_RETRIES = 60
