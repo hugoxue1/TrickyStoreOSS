@@ -17,6 +17,40 @@
 
 ---
 
+## v3.1.3-ckb1（2026-11-20）
+
+- **commit**：`54aff7a`（2026-11-20，upgrade-test，三笔：`57cc0a9` 日志根治 / `083ad62` 链一致性 / `54aff7a` 本文件入库+版本号）。
+- **版本号**：`verName` v3.1.2-ckb1 → v3.1.3-ckb1；versionCode 236（`54aff7a` 正点提交构建，修复 232 版"工作区出包 commit 滞后"的记录断链）。
+- **在役构建**：`Tricky-Store-OSS-v3.1.3-ckb1-236-54aff7a-Release.zip`。
+
+### 变更
+
+**① 日志根治（排障盲区终结）**
+- `Logger.kt`：`logdReady` lazy 一次性求值 → 10s 节流重查（logd 未就绪时启动的 daemon **整生命周期日志丢失**——2026-11-20 MI9 排障实录盲区，开机注入日志全部不可见即此因）；
+- **文件环形日志** `/data/adb/tricky_store/logs/ts_daemon.log`（256KB 轮转保留 `.1`；daemon 进程独占 `enableFileSink` 门控，注入侧零文件写；失败静默降级 ≤1 次/分钟）——logd 再怎么丢，文件里全有；
+- `Main.kt` 启动自证横幅：模块版本 / Android 版本 / 拦截器形态 / target 包数 / keybox DeviceID 与算法属性（轻量正则提取）；
+- `KeystoreInterceptor.kt`（legacy A10/11 路径）：每查询 `Logger.d` 与 keystore2 路径措辞对齐（`intercept pre get uid=…` + `SKIP no-keybox-loaded` / `SKIP not-in-target` / `SERVE LEAF_HACK` 决策 + `post-hook alias` 结果 + 异常降级回原响应行），**行为零变更**。
+
+**② 链一致性根治（Hunter v6.72 深验四项红的代码级修复）**
+- `CertificateHack.hackLeaf`：改签复制扩展时**跳过 AKI(2.5.29.35)/SKID(2.5.29.14)**——原扩展指向原 keymaster 签发者密钥，改签后签发者=keybox 叶子，AKI↔签发者绑定校验必失败（= Hunter "Attestation Binding Integrity Weak Signal" 的经典判定材料）；不补新 AKI，与 `CertificateGen.buildCertificate` 极简集对齐；
+- `AndroidUtils.bootKey`：回源顺序 **`ro.boot.vbmeta.digest`（设备可见 digest 属性，检测器比对侧）→ public_key_digest → probe 缓存 TEE → 持久 boot_key**；`hackAttestExtension` 的 verifiedBootHash 同源化优先属性值——消除证书↔属性错位（= "Attestation Boot State Contradiction"）。
+
+**③ 版本迭代正典入库**
+- `CHANGELOG-ckb.md`（本文件）+ README 交叉链接。
+
+### 设备部署与验证
+
+| 设备 | 日期 | 结果 |
+|---|---|---|
+| MI9（cepheus A11 legacy keystore） | 2026-11-20 深夜 | **Hunter v6.72 绿 + momo v4.4.1 绿（双绿）**；文件日志全程可见（banner/健康门 gate poll/每查询/伪造服务记录全在档）；tee_status=FAILED/teeBroken=true（MI9 probe 常态，LEAF_HACK 兜底正常服务）。momo 曾出现一次"扫描转圈不结束"（自愈，未定谳——MI9 上 momo 与 TS 服务形态在档固有互斥的疑似新表现，复现时抓线程栈定位） |
+
+### 已知问题 / 行为变化
+
+1. `verifiedBootHash` 语义变化：digest 属性存在时不再保留原 keymaster rootOfTrust[3]，key=hash=属性值（一致性取舍，本即本补丁目的）；
+2. 改签叶子**无 AKI**（RFC 5280 建议非自签证书带 AKI；keystore2 GENERATE 路径同样无 AKI——与既有形态一致）；
+3. `setupBootHash()` 会在设备无 digest 属性时写入自生成值 → bootKey 形成"属性↔证书自洽闭环"（无真实 digest 的设备上的预期行为）；
+4. 未定谳清单移步本文件"未定谳/待验证"节（momo 转圈、过期箱 v6.72 判定、A13 11-04 安装 hash 等）。
+
 ## v3.1.2-ckb1（2026-11-19）
 
 - **commit**：`52eb6a9`（2026-11-19 00:16:51 +0800，upgrade-test）。变更研制日期 2026-11-18（docs 改机环境治理/218 号档当日闭环）。
