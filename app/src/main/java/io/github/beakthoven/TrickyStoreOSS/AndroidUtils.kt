@@ -29,13 +29,19 @@ object AndroidUtils {
     const val DO_NOT_REPORT = -1
 
     val bootKey: ByteArray by lazy {
-        getBootKeyFromProp()?.also { Logger.d("Using boot key from ro.boot.vbmeta.public_key_digest") }
-            ?: CachedAttestData?.verifiedBootKey?.takeIfNonZero()?.also {
-                Logger.d("Using boot key from cached TEE attestation")
-            }
-            ?: persistedBootKey().also {
-                Logger.d("Using persisted random boot key (no AVB key available)")
-            }
+        // The served certificate's verifiedBootKey must match the device-visible
+        // ro.boot.vbmeta.digest property (validators cross-check cert vs property), so prefer
+        // the live digest first. public_key_digest is the REAL AVB public key digest — on an
+        // unlocked device it identifies the untrusted key and contradicts the keybox chain we
+        // serve — so it is only a fallback now.
+        getBootHashFromProp()?.also { Logger.d("Using boot key from ro.boot.vbmeta.digest") }
+            ?: getBootKeyFromProp()?.also { Logger.d("Using boot key from ro.boot.vbmeta.public_key_digest") }
+                ?: CachedAttestData?.verifiedBootKey?.takeIfNonZero()?.also {
+                    Logger.d("Using boot key from cached TEE attestation")
+                }
+                ?: persistedBootKey().also {
+                    Logger.d("Using persisted random boot key (no AVB key available)")
+                }
     }
 
     private fun ByteArray.takeIfNonZero(): ByteArray? = takeIf { isNotEmpty() && any { it != 0.toByte() } }

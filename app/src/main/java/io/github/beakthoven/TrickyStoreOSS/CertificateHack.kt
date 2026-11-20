@@ -105,7 +105,18 @@ object CertificateHack {
             )
         builder.addExtension(hackAttestExtension(rootOfTrust, vector, encodables, teeIndex, uid))
         leafHolder.extensions.extensionOIDs.forEach { oid ->
-            if (oid.id != ATTESTATION_OID.id) builder.addExtension(leafHolder.getExtension(oid))
+            // Skip stale AKI/SKID (2.5.29.35 / 2.5.29.14): the copied values still point at the
+            // original keymaster issuer key, while the re-signed leaf is now issued by the keybox
+            // leaf (whose certs carry their own SKIDs). Stale issuer-binding extensions fail
+            // deep chain checks, so drop them and add no replacement AKI — matching the minimal
+            // extension set of CertificateGen.buildCertificate (KeyUsage + attestation only).
+            if (
+                oid.id != ATTESTATION_OID.id &&
+                oid.id != Extension.authorityKeyIdentifier.id &&
+                oid.id != Extension.subjectKeyIdentifier.id
+            ) {
+                builder.addExtension(leafHolder.getExtension(oid))
+            }
         }
         val leafDigest = leaf.sigAlgName.substringBefore("with", "SHA256")
         val keyboxSignerAlgo =
@@ -179,10 +190,14 @@ object CertificateHack {
         uid: Int,
     ): Extension {
         val verifiedBootKey = AndroidUtils.bootKey
-        var verifiedBootHash: ByteArray? = null
+        // bootKey prefers ro.boot.vbmeta.digest; prefer the same property here so the served
+        // verifiedBootKey/verifiedBootHash pair stays coherent with the device-visible digest
+        // (avoids cert-vs-property contradiction flags). When the property is absent, keep the
+        // original behavior below (original rootOfTrust hash, then the property fallback).
+        var verifiedBootHash: ByteArray? = AndroidUtils.getBootHashFromProp()
 
         try {
-            if (originalRootOfTrust is ASN1Sequence) {
+            if (verifiedBootHash == null && originalRootOfTrust is ASN1Sequence) {
                 verifiedBootHash = CertificateUtils.getByteArrayFromAsn1(originalRootOfTrust.getObjectAt(3))
             }
         } catch (t: Throwable) {
