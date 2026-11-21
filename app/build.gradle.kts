@@ -31,7 +31,7 @@ val gitCommitHash =
         .map { it.trim() }
         .get()
 
-  val verName = "v3.1.3-ckb1"
+  val verName = "v3.1.4-ckb1"
 
 android {
     namespace = "io.github.beakthoven.TrickyStoreOSS"

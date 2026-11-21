@@ -14,6 +14,7 @@ import android.os.ServiceManager
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.ProbeStatus
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
+import io.github.beakthoven.TrickyStoreOSS.CertificateHack
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.File
@@ -56,6 +57,7 @@ object PkgConfig {
             }
             packageModes = modes
             SecurityLevelInterceptor.invalidatePatchedResponses()
+            CertificateHack.invalidateLeafCache()
             Logger.i("update target packages: $modes")
         }
         raw.onFailure { Logger.e("failed to update target files", it) }
@@ -87,6 +89,7 @@ object PkgConfig {
             }
             if (KeyBoxUtils.readFromXml(contents, isCurrent)) {
                 SecurityLevelInterceptor.invalidatePatchedResponses()
+                CertificateHack.invalidateLeafCache()
             } else {
                 Logger.e("failed to update keybox; previous snapshot retained")
             }
@@ -268,6 +271,7 @@ object PkgConfig {
                 globalPatchLevel = null
                 packagePatchLevels = emptyMap()
                 SecurityLevelInterceptor.invalidatePatchedResponses()
+                CertificateHack.invalidateLeafCache()
                 return@runCatching
             }
             val contexts = LinkedHashMap<String, MutableList<String>>()
@@ -283,6 +287,7 @@ object PkgConfig {
             globalPatchLevel = parsed[""]
             packagePatchLevels = parsed.filterKeys { it.isNotEmpty() }
             SecurityLevelInterceptor.invalidatePatchedResponses()
+            CertificateHack.invalidateLeafCache()
             Logger.i(
                 "loaded patch levels: global=${globalPatchLevel != null}, ${packagePatchLevels.size} package overrides"
             )

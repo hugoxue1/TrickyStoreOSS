@@ -45,6 +45,11 @@ object Logger {
 
     private val logFile = File(LOG_DIR_PATH, LOG_FILE_NAME)
     private val fileLock = Any()
+    // [v3.1.4-ckb1 O6] 缓冲批量刷：每行三系统调用(open/write/close)+stat → 8KB 常驻缓冲，
+    // 每 64 行 flush；崩溃丢 ≤64 行（文件日志为补充通道，可接受）
+    private const val FLUSH_LINES = 64
+    private var bufferedLines = 0
+    private var sinkStream: java.io.FileOutputStream? = null
     // SimpleDateFormat 非线程安全：只在 fileLock 锁内使用
     private val fileTimeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
@@ -78,11 +83,23 @@ object Logger {
             try {
                 val stamp = fileTimeFormat.format(Date())
                 if (file.length() > MAX_LOG_FILE_BYTES) rotateLocked(file)
-                FileOutputStream(file, true).use { out ->
-                    out.write("[$stamp ${priorityLetter(priority)}] $msg\n".toByteArray(Charsets.UTF_8))
+                var out = sinkStream
+                if (out == null) {
+                    out = FileOutputStream(file, true)
+                    sinkStream = out
+                }
+                out.write("[$stamp ${priorityLetter(priority)}] $msg\n".toByteArray(Charsets.UTF_8))
+                bufferedLines++
+                if (bufferedLines >= FLUSH_LINES) {
+                    out.flush()
+                    bufferedLines = 0
                 }
             } catch (t: Throwable) {
-                // 文件日志是补充通道，写失败静默放弃，绝不影响注入主链路
+                // 文件日志是补充通道，写失败静默放弃，绝不影响注入主链路；
+                // 流损坏时丢弃句柄，下次写重建
+                try { sinkStream?.close() } catch (_: Throwable) {}
+                sinkStream = null
+                bufferedLines = 0
             }
         }
     }
@@ -104,6 +121,11 @@ object Logger {
 
     // 只保留一份 .1 旧档；rotate 前把历史残留（.1/.2/...）一并清掉
     private fun rotateLocked(file: File) {
+        // O6: 轮转前先关并复位缓冲句柄（旧句柄指向已改名文件；rename 期间不应有写句柄）
+        try { sinkStream?.flush() } catch (_: Throwable) {}
+        try { sinkStream?.close() } catch (_: Throwable) {}
+        sinkStream = null
+        bufferedLines = 0
         val dir = file.parentFile ?: return
         dir.listFiles { f -> f.name.startsWith("${file.name}.") }?.forEach { it.delete() }
         if (!file.renameTo(File(dir, "${file.name}.1"))) file.delete()

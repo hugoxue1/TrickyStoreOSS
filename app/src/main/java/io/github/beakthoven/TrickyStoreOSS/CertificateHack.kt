@@ -36,6 +36,25 @@ object CertificateHack {
 
     val leafAlgorithms = ConcurrentHashMap<KeyIdentifier, String>()
 
+    // [v3.1.4-ckb1 O1] legacy 改签叶子缓存：键=uid+alias+输入叶子 SHA-256，值=改签后 DER。
+    // 输入不变则输出确定不变（hackLeaf 全部输入可枚举），命中即省去每次的 ASN.1 重建+
+    // BC 签名（每查询 1-5ms CPU——发热优化主项，222 号档 T1）。容量上限整体清空（真实
+    // 键空间=uid×alias 组合，量级小；失效主路径是 invalidateLeafCache，上限只是保险丝）。
+    private const val LEAF_CACHE_MAX = 128
+    private data class LeafCacheKey(val uid: Int, val alias: String, val inputSha: ByteArray) {
+        override fun equals(other: Any?): Boolean =
+            other is LeafCacheKey && other.uid == uid && other.alias == alias &&
+                other.inputSha.contentEquals(inputSha)
+        override fun hashCode(): Int = uid * 31 + alias.hashCode() * 17 + inputSha.contentHashCode()
+    }
+    private val leafCache = ConcurrentHashMap<LeafCacheKey, ByteArray>()
+
+    /** keybox/target/patchlevel 变更时由 Config.kt 调用（与 invalidatePatchedResponses 并排）。 */
+    fun invalidateLeafCache() {
+        leafCache.clear()
+        Logger.d("leaf cache invalidated")
+    }
+
     fun patchAuthorizations(authorizations: Array<Authorization>?, uid: Int): Array<Authorization>? {
         if (authorizations == null) return null
         val os = AndroidUtils.patchLevelOverride(uid)
@@ -168,6 +187,22 @@ object CertificateHack {
 
     fun hackUserCertificate(certificate: ByteArray?, alias: String, uid: Int): ByteArray {
         if (certificate == null) throw UnsupportedOperationException("Leaf certificate is null!")
+        // [v3.1.4-ckb1 发热优化 O1] legacy 每查询重签缓存：与 keystore2 路径的
+        // patchedResponses 对齐。键 = uid+alias+输入叶子哈希（输入不变则输出不变——
+        // hackLeaf 的全部输入：原叶字段 + keybox + patchlevel 覆盖 + bootKey/digest）；
+        // 失效 = invalidateLeafCache()（Config.kt 在 keybox/target/patchlevel 变更点调用，
+        // 与 invalidatePatchedResponses 并排）。失败不缓存（保留重试语义）。
+        val inputSha = try {
+            java.security.MessageDigest.getInstance("SHA-256").digest(certificate)
+        } catch (t: Throwable) {
+            null
+        }
+        if (inputSha != null) {
+            leafCache[LeafCacheKey(uid, alias, inputSha)]?.let { cached ->
+                Logger.d("leaf cache hit uid=$uid alias=$alias")
+                return cached
+            }
+        }
         return try {
             val leaf =
                 CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificate))
@@ -175,7 +210,12 @@ object CertificateHack {
             if (leaf.getExtensionValue(ATTESTATION_OID.id) == null) return certificate
             leafAlgorithms[KeyIdentifier(alias, uid)] = leaf.publicKey.algorithm
             val hacked = hackLeaf(arrayOf(leaf), uid)
-            hacked[0].encoded
+            val encoded = hacked[0].encoded
+            if (inputSha != null) {
+                if (leafCache.size >= LEAF_CACHE_MAX) leafCache.clear()
+                leafCache[LeafCacheKey(uid, alias, inputSha)] = encoded
+            }
+            encoded
         } catch (t: Throwable) {
             Logger.e("Failed to hack user certificate", t)
             certificate
