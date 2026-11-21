@@ -17,6 +17,16 @@
 
 ---
 
+## v3.1.4-ckb1（2026-11-21）
+
+- **commit**：`a024bb0`（upgrade-test，前置 `57cc0a9` 日志/`083ad62` 链一致性之上追加）。
+- **版本号**：v3.1.3-ckb1 → v3.1.4-ckb1；构建 `Tricky-Store-OSS-v3.1.4-ckb1-240-a024bb0-Release.zip`。
+- **变更（发热优化 O1+O6，222 号档 §六）**：
+  - **O1 legacy 每查询改签缓存**：`CertificateHack.hackUserCertificate` 增 `leafCache`（键=uid+alias+输入叶子 SHA-256，上限 128 整体清空）——命中省去每查询 ASN.1 重建+BC 签名（1-5ms CPU，222 号档 T1 主热源）；`invalidateLeafCache()` 挂 Config.kt 全部 4 个失效点；失败不缓存；
+  - **O6 文件日志缓冲批量刷**：文件 sink 从每行 open/write/close+stat 三系统调用 → 8KB 常驻缓冲句柄+每 64 行 flush（IO 降 ~98%）；rotate 前关并复位句柄；崩溃丢 ≤64 行（补充通道可接受）；
+  - 版本纪律：本条即 v3.1.4 追加记录。
+- **设备部署**：MI9/A13 待装机（zip 在 out/）；验证口径=文件日志行速率前后对比+温区采样（221 §1.3）。
+
 ## v3.1.3-ckb1（2026-11-20）
 
 - **commit**：`54aff7a`（2026-11-20，upgrade-test，三笔：`57cc0a9` 日志根治 / `083ad62` 链一致性 / `54aff7a` 本文件入库+版本号）。
